@@ -1,0 +1,117 @@
+name: Publish npm packages
+
+# One-time setup per package on npmjs.com (Package Settings -> Trusted Publishers):
+#   Provider: GitHub Actions
+#   Organization / Owner: tensorjetai
+#   Repository: tenantshield
+#   Workflow filename: publish-npm.yml
+#
+# Once linked on npmjs.com for both `tenantshield` and `tenantshield-mcp`,
+# pushing an annotated or lightweight `vX.Y.Z` tag publishes via OIDC
+# without local npm login, 2FA prompts, or long-lived NPM_TOKEN secrets.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate, test, and pack without publishing to npm'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tenantshield-npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.4
+
+      - name: Setup Node.js 24 (npm >= 11.5.1 for OIDC Trusted Publishing)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify release version consistency
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_version="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("apps/cli/package.json", "utf8")).version)')"
+          mcp_version="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("packages/mcp/package.json", "utf8")).version)')"
+
+          if [[ "$cli_version" != "$mcp_version" ]]; then
+            echo "Version mismatch: apps/cli ($cli_version) != packages/mcp ($mcp_version)" >&2
+            exit 1
+          fi
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            tag_version="${REF_NAME#v}"
+            if [[ "$tag_version" == "$REF_NAME" || ! "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Expected tag v<semver>, received: $REF_NAME" >&2
+              exit 1
+            fi
+            if [[ "$tag_version" != "$cli_version" ]]; then
+              echo "Tag version $tag_version does not match package version $cli_version" >&2
+              exit 1
+            fi
+          fi
+
+          node -e '
+            const fs = require("node:fs");
+            const v = process.argv[1];
+            const mcpSrc = fs.readFileSync("packages/mcp/src/index.ts", "utf8");
+            if (!mcpSrc.includes(`version: \x27${v}\x27`)) {
+              throw new Error(`packages/mcp/src/index.ts serverInfo version is not ${v}`);
+            }
+            const e2eTest = fs.readFileSync("test/e2e/version.e2e.test.ts", "utf8");
+            if (!e2eTest.includes(`toBe(\x27${v}\x27)`)) {
+              throw new Error(`test/e2e/version.e2e.test.ts expected version is not ${v}`);
+            }
+          ' "$cli_version"
+
+          echo "version=$cli_version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify formatting, lint, types, tests, and packed tarballs
+        run: |
+          pnpm format:check
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm test:e2e
+          pnpm pack:verify
+
+      - name: Publish tarballs to npm via OIDC Trusted Publishing
+        if: ${{ inputs.dry_run != true }}
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm publish "artifacts/tenantshield-${VERSION}.tgz" --access public
+          npm publish "artifacts/tenantshield-mcp-${VERSION}.tgz" --access public

@@ -60,6 +60,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - run: pnpm test:integration
         env:
           TENANTSHIELD_INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres

@@ -18,7 +18,8 @@
     "test:unit": "vitest run packages",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "pnpm build && vitest run --config vitest.e2e.config.ts",
-    "pack:verify": "pnpm build && pnpm --filter tenantshield pack --pack-destination artifacts && pnpm --filter tenantshield-mcp pack --pack-destination artifacts"
+    "pack:verify": "pnpm build && pnpm --filter tenantshield pack --pack-destination artifacts && pnpm --filter tenantshield-mcp pack --pack-destination artifacts",
+    "version:bump": "node scripts/bump-version.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
