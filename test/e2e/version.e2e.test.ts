@@ -36,7 +36,7 @@ describe('packaged CLI', () => {
       resolve('apps/cli/dist/index.js'),
       '--version',
     ]);
-    expect(result.stdout.trim()).toBe('0.2.1');
+    expect(result.stdout.trim()).toBe('0.2.2');
   });
 
   it('supports the audit alias for scan', async () => {
