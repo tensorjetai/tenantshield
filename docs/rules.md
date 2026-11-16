@@ -4,7 +4,7 @@
 | ----------------- | ---------------------------------------------------------------------------------------------- | ---------------- |
 | `TS-RLS-001`      | Exposed table has RLS disabled                                                                 | Critical         |
 | `TS-RLS-002`      | Data API role has an operation grant without applicable policy                                 | High             |
-| `TS-RLS-003`      | Permissive policy has an omitted or unconditional effective boundary                           | High             |
+| `TS-RLS-003`      | Permissive policy has an omitted, unconditional, or auth-only non-tenant boundary              | High             |
 | `TS-RLS-004`      | Policy targets a role outside configured identities                                            | High             |
 | `TS-RLS-005`      | INSERT/UPDATE policy lacks an effective `WITH CHECK` boundary                                  | Medium           |
 | `TS-RLS-006`      | Connection role is superuser or has `BYPASSRLS`; effective dynamic role is separately verified | Medium           |
@@ -31,7 +31,7 @@ Table ownership is also effective through inherited roles. Owners bypass ordinar
 
 Restrictive policies combine with permissive results using AND. TenantShield suppresses unconditional-policy findings only when every active role and operation has a restrictive expression with a recognizable tenant-column binding to `auth.uid()`, `auth.jwt()`, or the request JWT setting. Broad checks such as `auth.uid() IS NOT NULL` do not count as tenant boundaries.
 
-`TS-RLS-010` reports `TRUNCATE` grants because PostgreSQL does not apply row-level security to that command. `TS-FN-001` excludes trigger functions; `TS-FN-002` checks exposed definer functions for a pinned `search_path`. `TS-STORAGE-001` compares bucket visibility with policies on `storage.objects`. The performance rules identify per-row auth-helper calls and tenant columns without a leading index; `(select auth.uid())` and `(select auth.jwt())` remain recognized tenant-boundary expressions.
+`TS-RLS-010` reports `TRUNCATE` grants because PostgreSQL does not apply row-level security to that command. `TS-FN-001` excludes trigger functions; `TS-FN-002` checks exposed definer functions for a pinned `search_path`. `TS-RLS-003` also detects auth-only permissive boundaries (`auth.uid() IS NOT NULL`, `auth.role() = 'authenticated'`) and unconditional `OR` bypass branches. `TS-STORAGE-001` compares bucket visibility with `storage.objects` policies (`=`, `IN`, `ANY`, and bucket-wide policies) and flags unconditional public-bucket write policies. The performance rules identify per-row auth-helper calls and tenant columns without a leading index; `(select auth.uid())` and `(select auth.jwt())` remain recognized tenant-boundary expressions.
 
 Membership predicates using `IN` and `EXISTS` are recognized when they bind access to a request identity. Dynamic controls can also probe a configured dual-member identity for scalar-subquery cardinality failures.
 

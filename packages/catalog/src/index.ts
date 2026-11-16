@@ -63,6 +63,7 @@ export const catalogViewSchema = z.object({
   schema: z.string(),
   name: z.string(),
   securityInvoker: z.boolean(),
+  isMaterialized: z.boolean().optional(),
   grants: z.array(catalogGrantSchema),
 });
 
@@ -132,7 +133,8 @@ ORDER BY n.nspname, c.relname`;
 
 const VIEWS_QUERY = `
 SELECT n.nspname AS schema_name, c.relname AS view_name,
-       COALESCE(c.relkind = 'v' AND 'security_invoker=true' = ANY(c.reloptions), false) AS security_invoker
+       COALESCE(c.relkind = 'v' AND 'security_invoker=true' = ANY(c.reloptions), false) AS security_invoker,
+       c.relkind = 'm' AS is_materialized
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('v', 'm') AND n.nspname = ANY($1::text[])
@@ -464,6 +466,7 @@ async function readCatalogSnapshot(
       schema,
       name,
       securityInvoker: Boolean(row['security_invoker']),
+      ...(row['is_materialized'] ? { isMaterialized: true } : {}),
       grants: [],
     });
   }

@@ -193,6 +193,58 @@ describe('static rule pack', () => {
     expect(findings.filter((item) => item.ruleId === 'TS-STORAGE-001')).toHaveLength(2);
   });
 
+  it('handles storage IN/ANY bucket filters, auth-only private policies, and public-bucket writes', () => {
+    const storageObjects: CatalogTable = {
+      ...secureTable,
+      schema: 'storage',
+      name: 'objects',
+      policies: [
+        {
+          name: 'multi private bucket owner check',
+          command: 'select',
+          permissive: true,
+          roles: ['authenticated'],
+          usingExpression: "bucket_id IN ('private-id', 'archive-id') AND auth.uid() = owner_id",
+          checkExpression: null,
+        },
+        {
+          name: 'weak private auth-only check',
+          command: 'select',
+          permissive: true,
+          roles: ['authenticated'],
+          usingExpression: "bucket_id = 'weak-private' AND auth.uid() IS NOT NULL",
+          checkExpression: null,
+        },
+        {
+          name: 'public bucket open upload',
+          command: 'insert',
+          permissive: true,
+          roles: ['authenticated'],
+          usingExpression: null,
+          checkExpression: "bucket_id = 'public-assets' AND auth.role() = 'authenticated'",
+        },
+      ],
+    };
+    const findings = runStaticRules(
+      {
+        ...snapshot(storageObjects),
+        schemas: ['public', 'storage'],
+        storageBuckets: [
+          { id: 'private-id', name: 'private-files', isPublic: false },
+          { id: 'weak-private', name: 'weak-private', isPublic: false },
+          { id: 'public-assets', name: 'public-assets', isPublic: true },
+        ],
+      },
+      config,
+    );
+    const storageFindings = findings.filter((item) => item.ruleId === 'TS-STORAGE-001');
+    expect(storageFindings).toHaveLength(2);
+    expect(storageFindings.map((item) => item.reproduction.details)).toEqual([
+      'storage.objects: bucket weak-private (weak-private)',
+      'storage.objects: bucket public-assets (public-assets)',
+    ]);
+  });
+
   it('does not call an ungranted table exposed when RLS is disabled', () => {
     expect(
       runStaticRules(
@@ -608,6 +660,27 @@ describe('static rule pack', () => {
     );
   });
 
+  it('flags exposed materialized views with materialized-view remediation', () => {
+    const input = {
+      ...snapshot(),
+      views: [
+        {
+          schema: 'public',
+          name: 'tenant_totals_mv',
+          securityInvoker: false,
+          isMaterialized: true,
+          grants: [{ role: 'authenticated', privileges: ['select'] }],
+        },
+      ],
+    } as CatalogSnapshot;
+    const findings = runStaticRules(input, config);
+    const mvFinding = findings.find(
+      (item) => item.ruleId === 'TS-VIEW-001' && item.table === 'tenant_totals_mv',
+    );
+    expect(mvFinding).toBeDefined();
+    expect(mvFinding?.remediation).toContain('REVOKE SELECT ON MATERIALIZED VIEW');
+  });
+
   it('keeps security-impact severities aligned with the rule contract', () => {
     const withoutRls = runStaticRules(snapshot({ ...secureTable, rlsEnabled: false }), config);
     expect(withoutRls).toContainEqual(
@@ -733,8 +806,8 @@ describe('static rule pack', () => {
     ).toContainEqual(expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }));
   });
 
-  it('keeps current handling of a permissive OR-split policy expression', () => {
-    const orSplit = {
+  it('flags permissive OR-split unconditional bypasses while avoiding false positives on AND or business flags', () => {
+    const orTrue = {
       ...secureTable,
       policies: secureTable.policies.map((policy) =>
         policy.command === 'select'
@@ -742,7 +815,60 @@ describe('static rule pack', () => {
           : policy,
       ),
     };
-    expect(runStaticRules(snapshot(orSplit), config)).not.toContainEqual(
+    expect(runStaticRules(snapshot(orTrue), config)).toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }),
+    );
+
+    const orAuthOnly = {
+      ...secureTable,
+      policies: secureTable.policies.map((policy) =>
+        policy.command === 'select'
+          ? { ...policy, usingExpression: "org_id = auth.uid() OR auth.role() = 'authenticated'" }
+          : policy,
+      ),
+    };
+    expect(runStaticRules(snapshot(orAuthOnly), config)).toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }),
+    );
+
+    const andWithPresence = {
+      ...secureTable,
+      policies: secureTable.policies.map((policy) =>
+        policy.command === 'select'
+          ? { ...policy, usingExpression: 'org_id = auth.uid() AND auth.uid() IS NOT NULL' }
+          : policy,
+      ),
+    };
+    expect(runStaticRules(snapshot(andWithPresence), config)).not.toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }),
+    );
+
+    const publicRowFlag = {
+      ...secureTable,
+      policies: secureTable.policies.map((policy) =>
+        policy.command === 'select'
+          ? { ...policy, usingExpression: 'org_id = auth.uid() OR is_public = true' }
+          : policy,
+      ),
+    };
+    expect(runStaticRules(snapshot(publicRowFlag), config)).not.toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }),
+    );
+  });
+
+  it.each([
+    'auth.uid() IS NOT NULL',
+    '(select auth.uid()) IS NOT NULL',
+    "auth.role() = 'authenticated'",
+    "(auth.jwt() ->> 'role') = 'authenticated'",
+  ])('flags auth-only permissive boundary without tenant scoping: %s', (usingExpression) => {
+    const authOnly = {
+      ...secureTable,
+      policies: secureTable.policies.map((policy) =>
+        policy.command === 'select' ? { ...policy, usingExpression } : policy,
+      ),
+    };
+    expect(runStaticRules(snapshot(authOnly), config)).toContainEqual(
       expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }),
     );
   });

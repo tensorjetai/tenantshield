@@ -180,25 +180,68 @@ function isNumericLiteral(operand: string): boolean {
   return /^\d+(?:\.\d+)?$/.test(operand);
 }
 
+function isAuthPresenceCheck(term: string): boolean {
+  const unwrapped = stripOuterParens(term);
+  if (
+    /^(?:\(\s*select\s+(?:\(\s*)*)?(?:auth\s*\.\s*(?:uid|jwt|role|email)\s*\(\s*\)|current_setting\s*\(\s*['"]request\.jwt\.(?:claims|claim\.sub)['"][^)]*\))(?:\s*\))*\s+is\s+not\s+null$/i.test(
+      unwrapped,
+    )
+  ) {
+    return true;
+  }
+  const roleExpr =
+    /^(?:auth\s*\.\s*role\s*\(\s*\)|(?:\(\s*select\s+(?:\(\s*)*)?auth\s*\.\s*jwt\s*\(\s*\)(?:\s*\))*\s*->>?\s*'role'|current_setting\s*\(\s*['"]request\.jwt\.claim\.role['"][^)]*\))$/i;
+  const roleLiteral = /^'(?:authenticated|anon)'$/i;
+  for (const { index } of topLevelOccurrences(unwrapped, /=/)) {
+    if (/[<>!]$/.test(unwrapped.slice(0, index).trimEnd())) continue;
+    const left = stripOperandWrappers(unwrapped.slice(0, index));
+    const right = stripOperandWrappers(unwrapped.slice(index + 1));
+    if (
+      (roleExpr.test(left) && roleLiteral.test(right)) ||
+      (roleExpr.test(right) && roleLiteral.test(left))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isUnconditionalConjunction(expression: string): boolean {
+  const terms = splitTopLevel(stripOuterParens(expression), /\band\b/);
+  return (
+    terms.length > 0 &&
+    terms.every((term) => {
+      const unwrapped = stripOuterParens(term);
+      if (!unwrapped) return false;
+      if (unwrapped === 'true') return true;
+      if (isAuthPresenceCheck(unwrapped)) return true;
+      const comparisonPatterns = [/\bis\s+not\s+distinct\s+from\b/, /=/];
+      for (const pattern of comparisonPatterns) {
+        for (const { index, text } of topLevelOccurrences(unwrapped, pattern)) {
+          const leftText = unwrapped.slice(0, index).trim();
+          if (pattern.source === '=' && /[<>!]$/.test(leftText)) continue;
+          const left = stripOperandWrappers(leftText);
+          const right = stripOperandWrappers(unwrapped.slice(index + text.length));
+          if (left && left === right) return true;
+          if (isNumericLiteral(left) && isNumericLiteral(right) && Number(left) === Number(right)) {
+            return true;
+          }
+        }
+      }
+      if (/\bor\b/.test(unwrapped) && splitTopLevel(unwrapped, /\bor\b/).length > 1) {
+        return isExplicitlyUnconditional(unwrapped);
+      }
+      return false;
+    })
+  );
+}
+
 function isExplicitlyUnconditional(expression: string | null): boolean {
   if (expression === null) return false;
   const normalized = expression.trim().toLowerCase().replaceAll(/\s+/g, ' ');
   const unwrapped = stripOuterParens(normalized);
-  if (unwrapped === 'true') return true;
-  const comparisonPatterns = [/\bis\s+not\s+distinct\s+from\b/, /=/];
-  for (const pattern of comparisonPatterns) {
-    for (const { index, text } of topLevelOccurrences(unwrapped, pattern)) {
-      const leftText = unwrapped.slice(0, index).trim();
-      if (pattern.source === '=' && /[<>!]$/.test(leftText)) continue;
-      const left = stripOperandWrappers(leftText);
-      const right = stripOperandWrappers(unwrapped.slice(index + text.length));
-      if (left && left === right) return true;
-      if (isNumericLiteral(left) && isNumericLiteral(right) && Number(left) === Number(right)) {
-        return true;
-      }
-    }
-  }
-  return false;
+  if (!unwrapped) return false;
+  return splitTopLevel(unwrapped, /\bor\b/).some((branch) => isUnconditionalConjunction(branch));
 }
 
 function effectivePolicyRoles(policy: CatalogTable['policies'][number]): readonly string[] {
@@ -541,7 +584,8 @@ function unconditionalPolicyFindings(table: CatalogTable, tenantColumn?: string)
         table: table.name,
         policy: policy.name,
         expected: 'Tenant-scoped policy expression',
-        observed: 'An effective USING or WITH CHECK boundary is omitted or unconditional true',
+        observed:
+          'An effective USING or WITH CHECK boundary is omitted, unconditional, or auth-only without tenant scoping',
         reproduction: reproduction(table, `policy ${policy.name}`),
         remediation:
           'Replace the unconditional expression with an explicit ownership or tenant predicate.',
@@ -813,6 +857,57 @@ function securityDefinerSearchPathRule(ctx: StaticRuleContext): Finding[] {
     );
 }
 
+function storagePolicyMatchesBucket(
+  policy: CatalogTable['policies'][number],
+  bucket: { id: string; name: string },
+): boolean {
+  const expression = `${policy.usingExpression ?? ''} ${policy.checkExpression ?? ''}`;
+  if (!/\bbucket_id\b/i.test(expression)) return true;
+  const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const bucketPattern = `(?:['"]${escapeRegex(bucket.id)}['"]|['"]${escapeRegex(bucket.name)}['"])`;
+  return (
+    new RegExp(`\\bbucket_id\\s*=\\s*${bucketPattern}`, 'i').test(expression) ||
+    new RegExp(`\\bbucket_id\\s+in\\s*\\([^)]*${bucketPattern}`, 'i').test(expression) ||
+    new RegExp(`\\bbucket_id\\s*=\\s*any\\s*\\([^)]*${bucketPattern}`, 'i').test(expression)
+  );
+}
+
+function storageExpressionWithoutBucketFilter(expression: string | null): string | null {
+  if (!expression) return null;
+  const normalized = expression.trim().toLowerCase().replaceAll(/\s+/g, ' ');
+  const branches = splitTopLevel(stripOuterParens(normalized), /\bor\b/);
+  const filteredBranches = branches
+    .map((branch) => {
+      const nonBucketTerms = splitTopLevel(stripOuterParens(branch), /\band\b/).filter(
+        (term) => !/\bbucket_id\b/i.test(term),
+      );
+      return nonBucketTerms.join(' and ');
+    })
+    .filter(Boolean);
+  return filteredBranches.length > 0 ? filteredBranches.join(' or ') : null;
+}
+
+function isStoragePolicyUnconditional(policy: CatalogTable['policies'][number]): boolean {
+  const expressions = [policy.usingExpression, policy.checkExpression].filter(
+    (value): value is string => value !== null,
+  );
+  if (expressions.length === 0) return true;
+  return expressions.some((expr) =>
+    isExplicitlyUnconditional(storageExpressionWithoutBucketFilter(expr)),
+  );
+}
+
+function isStoragePolicyScoped(policy: CatalogTable['policies'][number]): boolean {
+  const expressions = [policy.usingExpression, policy.checkExpression].filter(
+    (value): value is string => Boolean(value),
+  );
+  if (expressions.length === 0) return false;
+  return (
+    !isStoragePolicyUnconditional(policy) &&
+    expressions.some((expr) => /auth\s*\.\s*(?:uid|jwt)\s*\(|storage\.foldername\s*\(/i.test(expr))
+  );
+}
+
 function storagePolicyRule(ctx: StaticRuleContext): Finding[] {
   const storageTable = ctx.snapshot.tables.find(
     (table) => table.schema === 'storage' && table.name === 'objects',
@@ -820,27 +915,27 @@ function storagePolicyRule(ctx: StaticRuleContext): Finding[] {
   if (!storageTable || !ctx.snapshot.storageBuckets) return [];
   const findings: Finding[] = [];
   for (const bucket of ctx.snapshot.storageBuckets) {
-    const associated = storageTable.policies.filter((policy) => {
-      const expression = `${policy.usingExpression ?? ''} ${policy.checkExpression ?? ''}`;
-      const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const bucketId = escapeRegex(bucket.id);
-      const bucketName = escapeRegex(bucket.name);
-      return new RegExp(
-        `(?:bucket_id\\s*=\\s*['"]${bucketId}['"]|bucket_id\\s*=\\s*['"]${bucketName}['"])`,
-        'i',
-      ).test(expression);
-    });
-    const scoped = associated.some((policy) =>
-      /auth\s*\.\s*(?:uid|jwt)\s*\(|storage\.foldername\s*\(/i.test(
-        `${policy.usingExpression ?? ''} ${policy.checkExpression ?? ''}`,
-      ),
+    const associated = storageTable.policies.filter(
+      (policy) =>
+        effectivePolicyRoles(policy).length > 0 && storagePolicyMatchesBucket(policy, bucket),
     );
-    const unconditional = associated.some(
+    const scopedRead = associated.some(
+      (policy) =>
+        (policy.command === 'select' || policy.command === 'all') && isStoragePolicyScoped(policy),
+    );
+    const scopedAny = associated.some((policy) => isStoragePolicyScoped(policy));
+    const unconditionalWrite = associated.some(
       (policy) =>
         policy.permissive &&
-        /\btrue\b/i.test(`${policy.usingExpression ?? ''} ${policy.checkExpression ?? ''}`),
+        ['insert', 'update', 'delete', 'all'].includes(policy.command) &&
+        isStoragePolicyUnconditional(policy),
     );
-    if ((bucket.isPublic && scoped) || (!bucket.isPublic && (unconditional || !scoped))) {
+    const unconditionalAny = associated.some(
+      (policy) => policy.permissive && isStoragePolicyUnconditional(policy),
+    );
+    const publicMismatch = bucket.isPublic && (scopedRead || unconditionalWrite);
+    const privateMismatch = !bucket.isPublic && (unconditionalAny || !scopedAny);
+    if (publicMismatch || privateMismatch) {
       findings.push(
         finding({
           ruleId: 'TS-STORAGE-001',
@@ -852,14 +947,18 @@ function storagePolicyRule(ctx: StaticRuleContext): Finding[] {
           table: 'objects',
           policy: associated.map((policy) => policy.name).join(', ') || undefined,
           expected: bucket.isPublic
-            ? 'Public bucket treated as publicly downloadable'
+            ? 'Public bucket downloads without relying on RLS, and owner-scoped write policies'
             : 'Private bucket protected by owner or tenant policy',
           observed: bucket.isPublic
-            ? `Public bucket ${bucket.name} has row-scoped policies that do not restrict public URL downloads`
+            ? unconditionalWrite
+              ? `Public bucket ${bucket.name} permits unconditional object writes/deletes`
+              : `Public bucket ${bucket.name} has row-scoped policies that do not restrict public URL downloads`
             : `Private bucket ${bucket.name} lacks an effective owner or tenant boundary`,
           reproduction: reproduction(storageTable, `bucket ${bucket.name} (${bucket.id})`),
           remediation: bucket.isPublic
-            ? 'Do not rely on storage.objects RLS to protect downloads from a public bucket; make it private or remove sensitive content.'
+            ? unconditionalWrite
+              ? 'Restrict INSERT, UPDATE, and DELETE policies on storage.objects to authorized owners or service roles.'
+              : 'Do not rely on storage.objects RLS to protect downloads from a public bucket; make it private or remove sensitive content.'
             : 'Add a bucket_id-scoped policy that checks auth.uid(), auth.jwt(), or storage.foldername().',
           documentationUrl: `${DOCS_BASE}ts-storage-001`,
         }),
@@ -952,7 +1051,9 @@ function performanceRules(ctx: StaticRuleContext): Finding[] {
 function definerViewFinding(view: CatalogView, roles: readonly string[]): Finding {
   return finding({
     ruleId: 'TS-VIEW-001',
-    title: 'Exposed view runs with definer privileges',
+    title: view.isMaterialized
+      ? 'Exposed materialized view bypasses row-level security'
+      : 'Exposed view runs with definer privileges',
     severity: 'high',
     confidence: 'high',
     source: 'static',
@@ -960,14 +1061,21 @@ function definerViewFinding(view: CatalogView, roles: readonly string[]): Findin
     table: view.name,
     role: roles.join(', '),
     operation: 'select',
-    expected: 'security_invoker=true or no Data API SELECT grant',
-    observed: 'Granted view uses its owner privileges and can bypass underlying RLS',
+    expected: view.isMaterialized
+      ? 'No Data API SELECT grant on materialized views'
+      : 'security_invoker=true or no Data API SELECT grant',
+    observed: view.isMaterialized
+      ? 'Granted materialized view caches owner-query rows and does not enforce PostgreSQL RLS'
+      : 'Granted view uses its owner privileges and can bypass underlying RLS',
     reproduction: {
       command: 'tenantshield scan',
-      details: `${view.schema}.${view.name}: inspect security_invoker and SELECT grants`,
+      details: view.isMaterialized
+        ? `${view.schema}.${view.name}: inspect materialized view SELECT grants`
+        : `${view.schema}.${view.name}: inspect security_invoker and SELECT grants`,
     },
-    remediation:
-      'Set security_invoker=true on PostgreSQL 15+ or revoke Data API access and move the view to an unexposed schema.',
+    remediation: view.isMaterialized
+      ? `REVOKE SELECT ON MATERIALIZED VIEW ${view.schema}.${view.name} FROM anon, authenticated, PUBLIC; or move it to an unexposed schema.`
+      : 'Set security_invoker=true on PostgreSQL 15+ or revoke Data API access and move the view to an unexposed schema.',
     documentationUrl: `${DOCS_BASE}ts-view-001`,
   });
 }
