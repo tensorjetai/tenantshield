@@ -47,7 +47,7 @@ The local admin connection lets TenantShield load deterministic fixtures. Every 
 
 - `tenantshield init`: discover `supabase/config.toml` and write starter YAML.
 - `tenantshield doctor`: check Node, Supabase CLI, Docker, project/config, and database reachability.
-- `tenantshield scan` (alias `audit`): run non-mutating table, foreign-table, view, function, storage, performance, grant, and policy rules across configured schemas.
+- `tenantshield scan` (alias `audit`): run non-mutating table, foreign-table, view, materialized-view, function, storage, performance, grant, and policy rules across configured schemas.
 - `tenantshield test`: load deterministic fixtures, run static checks, then isolated dynamic controls.
 - `tenantshield test --auto-seed`: synthesize deterministic fixture rows in a rollback-only transaction.
 - `tenantshield report`: convert saved JSON to terminal, HTML, JSON, SARIF, or Markdown; `--baseline` adds a fingerprint-based new/resolved diff.
@@ -72,6 +72,17 @@ Exit codes: `0` complete and clean at threshold; `1` complete scan with a findin
 - [Safety model](docs/safety.md)
 - [Limitations](docs/limitations.md)
 - [GitHub Actions example](examples/github-actions/tenantshield.yml)
+
+## Releasing (Maintainers)
+
+```bash
+pnpm version:bump <semver>
+git commit -am "chore: bump packages to v<semver>"
+git tag v<semver>
+git push origin main v<semver>
+```
+
+Pushing `v*` triggers `.github/workflows/publish-npm.yml` to run all checks, pack both tarballs, and publish `tenantshield` and `tenantshield-mcp` to npm via OIDC Trusted Publishing.
 
 ## License
 

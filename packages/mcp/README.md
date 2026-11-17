@@ -107,7 +107,7 @@ Connects to the local database, inspects system catalogs (`pg_class`, `pg_policy
 
 - **Returns**:
   - `matrix`: Array of tables, effective role privileges, and active RLS policies.
-  - `findings`: Static rule violations (`TS-RLS-001` through `TS-RLS-010`, `TS-FT-001`, `TS-FN-001`, etc.).
+  - `findings`: Static rule violations (`TS-RLS-001` through `TS-RLS-010`, `TS-FT-001`, `TS-FN-001..002`, `TS-STORAGE-001`, `TS-VIEW-001`, `TS-PERF-001..002`).
 
 ---
 

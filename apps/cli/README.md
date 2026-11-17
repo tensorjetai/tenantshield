@@ -193,30 +193,30 @@ resources:
 
 ## Rule Catalog (22 Deterministic Checks)
 
-| Rule ID           | Category | Default Severity | Description                                                                                   |
-| :---------------- | :------- | :--------------- | :-------------------------------------------------------------------------------------------- |
-| `TS-RLS-001`      | Static   | **Critical**     | Exposed table has Row-Level Security disabled.                                                |
-| `TS-RLS-002`      | Static   | **High**         | Data API role has an operation grant without an applicable policy.                            |
-| `TS-RLS-003`      | Static   | **High**         | Permissive policy has an omitted or unconditional boundary (`USING (true)`).                  |
-| `TS-RLS-004`      | Static   | **High**         | Policy grants access to roles outside configured identities.                                  |
-| `TS-RLS-005`      | Static   | **Medium**       | INSERT/UPDATE policy lacks an effective `WITH CHECK` boundary.                                |
-| `TS-RLS-006`      | Static   | **Medium**       | Connection role is superuser or has `BYPASSRLS` privileges.                                   |
-| `TS-RLS-007`      | Static   | **Critical**     | Data API role inherits table ownership without `FORCE ROW LEVEL SECURITY`.                    |
-| `TS-RLS-008`      | Static   | **High**         | Active RLS policy trusts user-editable `user_metadata` for authorization.                     |
-| `TS-RLS-009`      | Static   | **Low**          | Active RLS policy calls deprecated `auth.role()` or `auth.email()` helpers.                   |
-| `TS-RLS-010`      | Static   | **Critical**     | Data API role has `TRUNCATE` grants, bypassing row policies completely.                       |
-| `TS-FT-001`       | Static   | **Critical**     | Exposed foreign data wrapper (FDW) table lacks PostgreSQL RLS protection.                     |
-| `TS-FN-001`       | Static   | **High**         | Exposed `SECURITY DEFINER` function is executable by Data API roles or `PUBLIC`.              |
-| `TS-FN-002`       | Static   | **High**         | Exposed `SECURITY DEFINER` function lacks a pinned safe `search_path`.                        |
-| `TS-STORAGE-001`  | Static   | **High**         | Supabase Storage bucket visibility and `storage.objects` policy boundaries mismatch.          |
-| `TS-PERF-001`     | Static   | **Medium**       | Per-row `auth.uid()` / `auth.jwt()` calls lack scalar subquery caching `(SELECT auth.uid())`. |
-| `TS-PERF-002`     | Static   | **Low**          | RLS tenant column has no valid leading index.                                                 |
-| `TS-VIEW-001`     | Static   | **High**         | View exposed without `WITH (security_invoker = true)`.                                        |
-| `TS-DYN-SELECT`   | Dynamic  | **Critical**     | Foreign identity successfully read owner tenant rows.                                         |
-| `TS-DYN-INSERT`   | Dynamic  | **Critical**     | Foreign identity successfully inserted rows under another tenant identifier.                  |
-| `TS-DYN-UPDATE`   | Dynamic  | **Critical**     | Foreign identity took over owner rows or reassigned records to another tenant.                |
-| `TS-DYN-DELETE`   | Dynamic  | **Critical**     | Foreign identity successfully deleted owner tenant rows.                                      |
-| `TS-DYN-SUBQUERY` | Dynamic  | **High**         | Multi-organization junction subquery raised SQLSTATE `21000` (cardinality violation).         |
+| Rule ID           | Category | Default Severity | Description                                                                                                    |
+| :---------------- | :------- | :--------------- | :------------------------------------------------------------------------------------------------------------- |
+| `TS-RLS-001`      | Static   | **Critical**     | Exposed table has Row-Level Security disabled.                                                                 |
+| `TS-RLS-002`      | Static   | **High**         | Data API role has an operation grant without an applicable policy.                                             |
+| `TS-RLS-003`      | Static   | **High**         | Permissive policy has an omitted, unconditional (`USING (true)`), `OR`-true, or auth-only non-tenant boundary. |
+| `TS-RLS-004`      | Static   | **High**         | Policy grants access to roles outside configured identities.                                                   |
+| `TS-RLS-005`      | Static   | **Medium**       | INSERT/UPDATE policy lacks an effective `WITH CHECK` boundary.                                                 |
+| `TS-RLS-006`      | Static   | **Medium**       | Connection role is superuser or has `BYPASSRLS` privileges.                                                    |
+| `TS-RLS-007`      | Static   | **Critical**     | Data API role inherits table ownership without `FORCE ROW LEVEL SECURITY`.                                     |
+| `TS-RLS-008`      | Static   | **High**         | Active RLS policy trusts user-editable `user_metadata` for authorization.                                      |
+| `TS-RLS-009`      | Static   | **Low**          | Active RLS policy calls deprecated `auth.role()` or `auth.email()` helpers.                                    |
+| `TS-RLS-010`      | Static   | **Critical**     | Data API role has `TRUNCATE` grants, bypassing row policies completely.                                        |
+| `TS-FT-001`       | Static   | **Critical**     | Exposed foreign data wrapper (FDW) table lacks PostgreSQL RLS protection.                                      |
+| `TS-FN-001`       | Static   | **High**         | Exposed `SECURITY DEFINER` function is executable by Data API roles or `PUBLIC`.                               |
+| `TS-FN-002`       | Static   | **High**         | Exposed `SECURITY DEFINER` function lacks a pinned safe `search_path`.                                         |
+| `TS-STORAGE-001`  | Static   | **High**         | Supabase Storage bucket visibility and `storage.objects` policies (`=`, `IN`, `ANY`, public writes) disagree.  |
+| `TS-PERF-001`     | Static   | **Medium**       | Per-row `auth.uid()` / `auth.jwt()` calls lack scalar subquery caching `(SELECT auth.uid())`.                  |
+| `TS-PERF-002`     | Static   | **Low**          | RLS tenant column has no valid leading index.                                                                  |
+| `TS-VIEW-001`     | Static   | **High**         | Exposed regular or materialized view lacks `WITH (security_invoker = true)` / grant isolation.                 |
+| `TS-DYN-SELECT`   | Dynamic  | **Critical**     | Foreign identity successfully read owner tenant rows.                                                          |
+| `TS-DYN-INSERT`   | Dynamic  | **Critical**     | Foreign identity successfully inserted rows under another tenant identifier.                                   |
+| `TS-DYN-UPDATE`   | Dynamic  | **Critical**     | Foreign identity took over owner rows or reassigned records to another tenant.                                 |
+| `TS-DYN-DELETE`   | Dynamic  | **Critical**     | Foreign identity successfully deleted owner tenant rows.                                                       |
+| `TS-DYN-SUBQUERY` | Dynamic  | **High**         | Multi-organization junction subquery raised SQLSTATE `21000` (cardinality violation).                          |
 
 ---
 
