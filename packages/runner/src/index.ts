@@ -1046,7 +1046,7 @@ function dynamicFinding(testCase: DynamicCaseResult, schema: string, table: stri
         details: `${schema}.${table} as ${testCase.identity}; SQLSTATE 21000 details redacted`,
       },
       remediation: 'Use IN or EXISTS for multi-membership checks instead of a scalar subquery.',
-      documentationUrl: 'https://github.com/tenantshield/tenantshield#ts-dyn-subquery',
+      documentationUrl: 'https://github.com/tensorjetai/tenantshield#ts-dyn-subquery',
     };
     return { ...base, fingerprint: createFindingFingerprint(base) };
   }
@@ -1110,7 +1110,7 @@ function dynamicFinding(testCase: DynamicCaseResult, schema: string, table: stri
       details: `${schema}.${table} ${scenarioLabel} as ${testCase.identity}; identifiers and row values redacted`,
     },
     remediation: `Add a tenant-scoped ${testCase.operation.toUpperCase()} policy and verify its role target.`,
-    documentationUrl: `https://github.com/tenantshield/tenantshield#${ruleId.toLowerCase()}`,
+    documentationUrl: `https://github.com/tensorjetai/tenantshield#${ruleId.toLowerCase()}`,
   };
   return { ...base, fingerprint: createFindingFingerprint(base) };
 }

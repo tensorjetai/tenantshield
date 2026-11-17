@@ -9,7 +9,7 @@ import { createFindingFingerprint, type Finding } from '@tenantshield/findings';
 
 type FindingWithoutFingerprint = Omit<Finding, 'fingerprint'>;
 
-const DOCS_BASE = 'https://github.com/tenantshield/tenantshield#';
+const DOCS_BASE = 'https://github.com/tensorjetai/tenantshield#';
 
 function finding(input: FindingWithoutFingerprint): Finding {
   return { ...input, fingerprint: createFindingFingerprint(input) };
