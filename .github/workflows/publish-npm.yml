@@ -113,5 +113,5 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm publish "artifacts/tenantshield-${VERSION}.tgz" --access public
-          npm publish "artifacts/tenantshield-mcp-${VERSION}.tgz" --access public
+          npm publish "./artifacts/tenantshield-${VERSION}.tgz" --access public
+          npm publish "./artifacts/tenantshield-mcp-${VERSION}.tgz" --access public
