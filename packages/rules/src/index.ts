@@ -170,9 +170,19 @@ function isTenantOperand(operand: string, tenantColumn: string): boolean {
   return column === tenantColumn.toLowerCase();
 }
 
-function isRequestIdentityOperand(operand: string): boolean {
+function isRequestIdentityOperand(
+  operand: string,
+  options: { allowSubqueryConnectives?: boolean } = {},
+): boolean {
   const stripped = stripOperandWrappers(operand);
-  if (!stripped || hasTopLevelWord(stripped, BOOLEAN_CONNECTIVE_PATTERN)) return false;
+  if (!stripped) return false;
+  const isSelectSubquery = /^select\b/i.test(stripped);
+  if (
+    !(options.allowSubqueryConnectives && isSelectSubquery) &&
+    hasTopLevelWord(stripped, BOOLEAN_CONNECTIVE_PATTERN)
+  ) {
+    return false;
+  }
   return REQUEST_IDENTITY_PATTERN.test(stripped);
 }
 
@@ -371,7 +381,9 @@ function termBindsTenantToRequest(term: string, tenantColumn: string): boolean {
     if (expression.slice(closeIndex + 1).trim()) return false;
     return (
       isTenantOperand(expression.slice(0, index), tenantColumn) &&
-      isRequestIdentityOperand(expression.slice(openIndex + 1, closeIndex))
+      isRequestIdentityOperand(expression.slice(openIndex + 1, closeIndex), {
+        allowSubqueryConnectives: true,
+      })
     );
   }
 
@@ -392,8 +404,9 @@ function termBindsTenantToRequest(term: string, tenantColumn: string): boolean {
 function expressionBindsTenantToRequest(expression: string | null, tenantColumn: string): boolean {
   if (!expression) return false;
   const normalized = expression.trim().toLowerCase().replaceAll(/\s+/g, ' ');
-  if (/\bor\b/.test(normalized)) return false;
-  return splitTopLevel(normalized, /\band\b/).some((term) =>
+  const unwrapped = stripOuterParens(normalized);
+  if (!unwrapped || splitTopLevel(unwrapped, /\bor\b/).length > 1) return false;
+  return splitTopLevel(unwrapped, /\band\b/).some((term) =>
     termBindsTenantToRequest(term, tenantColumn),
   );
 }
@@ -518,6 +531,19 @@ function ownerBypassFinding(table: CatalogTable, roles: readonly string[]): Find
   });
 }
 
+function policyCoversOperationForRole(
+  policy: CatalogTable['policies'][number],
+  operation: CrudOperation,
+  role: string,
+): boolean {
+  if (!policy.permissive) return false;
+  if (policy.command !== 'all' && policy.command !== operation) return false;
+  const effective = effectivePolicyRoles(policy);
+  return (
+    policy.roles.includes('public') || effective.includes('public') || effective.includes(role)
+  );
+}
+
 function missingPolicyFindings(table: CatalogTable): Finding[] {
   const findings: Finding[] = [];
   for (const grant of table.grants) {
@@ -530,13 +556,16 @@ function missingPolicyFindings(table: CatalogTable): Finding[] {
         operation !== 'delete'
       )
         continue;
-      const covered = table.policies.some(
-        (policy) =>
-          policy.permissive &&
-          (policy.command === 'all' || policy.command === operation) &&
-          (effectivePolicyRoles(policy).includes('public') ||
-            effectivePolicyRoles(policy).includes(grant.role)),
-      );
+      const covered =
+        grant.role === 'public'
+          ? (['anon', 'authenticated'] as const).every((role) =>
+              table.policies.some((policy) =>
+                policyCoversOperationForRole(policy, operation, role),
+              ),
+            )
+          : table.policies.some((policy) =>
+              policyCoversOperationForRole(policy, operation, grant.role),
+            );
       if (covered) continue;
       findings.push(
         finding({
@@ -808,6 +837,7 @@ function securityDefinerSearchPathRule(ctx: StaticRuleContext): Finding[] {
   return ctx.snapshot.functions
     .filter((fn) => {
       if (
+        !ctx.snapshot.schemas.includes(fn.schema) ||
         fn.isTrigger ||
         !fn.securityDefiner ||
         !fn.executeRoles.some((role) => ['public', 'anon', 'authenticated'].includes(role))
@@ -904,7 +934,9 @@ function isStoragePolicyScoped(policy: CatalogTable['policies'][number]): boolea
   if (expressions.length === 0) return false;
   return (
     !isStoragePolicyUnconditional(policy) &&
-    expressions.some((expr) => /auth\s*\.\s*(?:uid|jwt)\s*\(|storage\.foldername\s*\(/i.test(expr))
+    expressions.some(
+      (expr) => REQUEST_IDENTITY_PATTERN.test(expr) || /storage\.foldername\s*\(/i.test(expr),
+    )
   );
 }
 
@@ -968,10 +1000,50 @@ function storagePolicyRule(ctx: StaticRuleContext): Finding[] {
   return findings;
 }
 
+function isWrappedInScalarSelect(expression: string, targetIndex: number): boolean {
+  const openParens: number[] = [];
+  let quote: string | null = null;
+  for (let i = 0; i < targetIndex; i += 1) {
+    const char = expression[i]!;
+    if (quote) {
+      if (char === quote) {
+        if (expression[i + 1] === quote) i += 1;
+        else quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') openParens.push(i);
+    else if (char === ')') openParens.pop();
+  }
+  if (quote !== null) return true;
+  for (let i = openParens.length - 1; i >= 0; i -= 1) {
+    const openIndex = openParens[i]!;
+    const closeIndex = balancedGroupEnd(expression, openIndex);
+    const subquery =
+      closeIndex >= 0
+        ? expression.slice(openIndex + 1, closeIndex)
+        : expression.slice(openIndex + 1);
+    if (
+      /^\s*select\b/i.test(subquery) &&
+      topLevelOccurrences(subquery, /\b(?:from|where|join)\b/i).length === 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function performanceRules(ctx: StaticRuleContext): Finding[] {
   const findings: Finding[] = [];
   for (const table of ctx.snapshot.tables.filter(
-    (candidate) => candidate.rlsEnabled && !candidate.isForeign,
+    (candidate) =>
+      ctx.snapshot.schemas.includes(candidate.schema) &&
+      candidate.rlsEnabled &&
+      !candidate.isForeign,
   )) {
     const resource = ctx.resourceFor(table);
     const tenantColumn = resource?.tenantColumn;
@@ -985,9 +1057,9 @@ function performanceRules(ctx: StaticRuleContext): Finding[] {
         (value): value is string => Boolean(value),
       );
       const slowAuth = expressions.some((expression) =>
-        [...expression.matchAll(/auth\s*\.\s*(?:uid|jwt)\s*\(/gi)].some((match) => {
-          return !/\(\s*select\s+(?:\(\s*)*$/i.test(expression.slice(0, match.index));
-        }),
+        [...expression.matchAll(/auth\s*\.\s*(?:uid|jwt)\s*\(/gi)].some(
+          (match) => match.index !== undefined && !isWrappedInScalarSelect(expression, match.index),
+        ),
       );
       if (slowAuth)
         findings.push(
@@ -1094,7 +1166,10 @@ type StaticRule = { id: string; check: (ctx: StaticRuleContext) => Finding[] };
 
 function scannableTables(ctx: StaticRuleContext): CatalogTable[] {
   return ctx.snapshot.tables.filter(
-    (table) => !ctx.resourceFor(table)?.public && ctx.hasDataApiAccess(table),
+    (table) =>
+      ctx.snapshot.schemas.includes(table.schema) &&
+      !ctx.resourceFor(table)?.public &&
+      ctx.hasDataApiAccess(table),
   );
 }
 
@@ -1168,7 +1243,12 @@ function missingWriteCheckRule(ctx: StaticRuleContext): Finding[] {
 function definerViewRule(ctx: StaticRuleContext): Finding[] {
   const findings: Finding[] = [];
   for (const view of ctx.snapshot.views) {
-    if (view.securityInvoker || ctx.resourceFor(view)?.public) continue;
+    if (
+      !ctx.snapshot.schemas.includes(view.schema) ||
+      view.securityInvoker ||
+      ctx.resourceFor(view)?.public
+    )
+      continue;
     const roles = view.grants
       .filter(
         (grant) =>
@@ -1186,6 +1266,7 @@ function securityDefinerRule(ctx: StaticRuleContext): Finding[] {
   return ctx.snapshot.functions
     .filter(
       (fn) =>
+        ctx.snapshot.schemas.includes(fn.schema) &&
         fn.securityDefiner &&
         !fn.isTrigger &&
         fn.executeRoles.some((role) => ['public', 'anon', 'authenticated'].includes(role)),

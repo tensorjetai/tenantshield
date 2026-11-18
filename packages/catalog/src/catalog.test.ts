@@ -283,6 +283,98 @@ describe('catalog snapshot', () => {
     await captureCatalogSnapshot(client, ['public']);
     expect(maximumActive).toBe(1);
   });
+
+  it('auto-captures storage.objects and buckets without leaking storage views, functions, or other storage tables into exposed schemas', async () => {
+    const query = vi.fn<SqlClient['query']>().mockImplementation((sql, values) => {
+      if (sql === BEGIN || sql === ROLLBACK) return Promise.resolve({ rows: [] });
+      if (sql.includes("to_regclass('storage.buckets')"))
+        return Promise.resolve({ rows: [{ has_storage: true }] });
+      if (sql.includes('current_database()')) {
+        return Promise.resolve({
+          rows: [
+            {
+              database_name: 'postgres',
+              server_version: '16.4',
+              current_role: 'scanner',
+              is_superuser: false,
+              can_bypass_rls: false,
+            },
+          ],
+        });
+      }
+      if (sql.includes('effective_owner_roles')) {
+        return Promise.resolve({
+          rows: [
+            {
+              schema_name: 'public',
+              table_name: 'invoices',
+              relation_kind: 'r',
+              rls_enabled: true,
+              rls_forced: false,
+              effective_owner_roles: '{}',
+            },
+            {
+              schema_name: 'storage',
+              table_name: 'objects',
+              relation_kind: 'r',
+              rls_enabled: true,
+              rls_forced: false,
+              effective_owner_roles: '{}',
+            },
+            {
+              schema_name: 'storage',
+              table_name: 'buckets',
+              relation_kind: 'r',
+              rls_enabled: true,
+              rls_forced: false,
+              effective_owner_roles: '{}',
+            },
+          ],
+        });
+      }
+      if (sql.includes("c.relkind IN ('v', 'm')")) {
+        const schemas = (values?.[0] as string[]) ?? [];
+        return Promise.resolve({
+          rows: schemas.includes('storage')
+            ? [{ schema_name: 'storage', view_name: 'storage_view', security_invoker: false }]
+            : [],
+        });
+      }
+      if (sql.includes('FROM pg_proc')) {
+        const schemas = (values?.[0] as string[]) ?? [];
+        return Promise.resolve({
+          rows: schemas.includes('storage')
+            ? [
+                {
+                  schema_name: 'storage',
+                  function_name: 'storage_fn',
+                  identity_arguments: '',
+                  security_definer: true,
+                  is_trigger: false,
+                  execute_roles: '{authenticated}',
+                },
+              ]
+            : [],
+        });
+      }
+      if (sql.includes('FROM storage.buckets')) {
+        return Promise.resolve({
+          rows: [{ id: 'avatars', name: 'avatars', is_public: false }],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const snapshot = await captureCatalogSnapshot({ query }, ['public']);
+    expect(snapshot.schemas).toEqual(['public']);
+    expect(snapshot.tables.map((t) => `${t.schema}.${t.name}`)).toEqual([
+      'public.invoices',
+      'storage.objects',
+    ]);
+    expect(snapshot.views).toEqual([]);
+    expect(snapshot.functions).toEqual([]);
+    expect(snapshot.storageBuckets).toEqual([{ id: 'avatars', name: 'avatars', isPublic: false }]);
+  });
 });
 
 describe('parsePostgresArray', () => {

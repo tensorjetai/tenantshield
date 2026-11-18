@@ -406,11 +406,12 @@ async function readCatalogSnapshot(
     hasStorage && !exposedSchemas.includes('storage')
       ? [...exposedSchemas, 'storage']
       : [...exposedSchemas];
+  const exposedSchemaValues = [exposedSchemas];
   const schemaValues = [capturedSchemas];
   const dependencyTargets = new Set<string>();
   const tableSchemas = new Set(capturedSchemas);
   if (includeForeignKeyDependencies) {
-    const result = await client.query(FOREIGN_KEY_TARGETS_QUERY, schemaValues);
+    const result = await client.query(FOREIGN_KEY_TARGETS_QUERY, exposedSchemaValues);
     for (const row of result.rows) {
       const schema = String(row['schema_name']);
       dependencyTargets.add(key(schema, String(row['table_name'])));
@@ -420,7 +421,7 @@ async function readCatalogSnapshot(
   const tableSchemaValues = [[...tableSchemas]];
   const databaseResult = await client.query(DATABASE_QUERY);
   const tablesResult = await client.query(TABLES_QUERY, tableSchemaValues);
-  const viewsResult = await client.query(VIEWS_QUERY, schemaValues);
+  const viewsResult = await client.query(VIEWS_QUERY, exposedSchemaValues);
   const columnsResult = await client.query(COLUMNS_QUERY, tableSchemaValues);
   const primaryKeysResult = await client.query(PRIMARY_KEYS_QUERY, tableSchemaValues);
   const indexesResult = await client.query(INDEXES_QUERY, schemaValues);
@@ -428,7 +429,7 @@ async function readCatalogSnapshot(
   const grantsResult = await client.query(GRANTS_QUERY, schemaValues);
   const policiesResult = await client.query(POLICIES_QUERY, schemaValues);
   const policyReferencesResult = await client.query(POLICY_REFERENCES_QUERY, schemaValues);
-  const functionsResult = await client.query(FUNCTIONS_QUERY, schemaValues);
+  const functionsResult = await client.query(FUNCTIONS_QUERY, exposedSchemaValues);
   const storageBucketsResult = hasStorage
     ? await client.query(
         'SELECT id::text AS id, name, COALESCE(public, false) AS is_public FROM storage.buckets ORDER BY name',
@@ -553,7 +554,11 @@ async function readCatalogSnapshot(
       canBypassRls: Boolean(database['can_bypass_rls']),
     },
     schemas: [...exposedSchemas],
-    tables: [...tables.values()].filter((table) => capturedSchemas.includes(table.schema)),
+    tables: [...tables.values()].filter(
+      (table) =>
+        exposedSchemas.includes(table.schema) ||
+        (hasStorage && table.schema === 'storage' && table.name === 'objects'),
+    ),
     ...(dependencyTargets.size
       ? {
           fixtureTables: [...tables.values()].filter((table) =>

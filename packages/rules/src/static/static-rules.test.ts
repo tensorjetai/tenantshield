@@ -872,4 +872,156 @@ describe('static rule pack', () => {
       expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }),
     );
   });
+
+  it('treats PUBLIC grants as covered when effectiveRoles or separate policies cover anon and authenticated', () => {
+    const publicGrantTable: CatalogTable = {
+      ...secureTable,
+      grants: [
+        { role: 'public', privileges: ['select', 'insert', 'update', 'delete'] },
+        { role: 'anon', privileges: ['select', 'insert', 'update', 'delete'] },
+        { role: 'authenticated', privileges: ['select', 'insert', 'update', 'delete'] },
+      ],
+      policies: secureTable.policies.map((policy) => ({
+        ...policy,
+        roles: ['public'],
+        effectiveRoles: ['anon', 'authenticated'],
+      })),
+    };
+    const publicPolicyFindings = runStaticRules(snapshot(publicGrantTable), config);
+    expect(publicPolicyFindings).not.toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-002' }),
+    );
+
+    const splitRolePolicies: CatalogTable = {
+      ...publicGrantTable,
+      policies: [
+        ...secureTable.policies.map((policy) => ({
+          ...policy,
+          name: `${policy.name} auth`,
+          roles: ['authenticated'],
+          effectiveRoles: ['authenticated'],
+        })),
+        ...secureTable.policies.map((policy) => ({
+          ...policy,
+          name: `${policy.name} anon`,
+          roles: ['anon'],
+          effectiveRoles: ['anon'],
+        })),
+      ],
+    };
+    expect(runStaticRules(snapshot(splitRolePolicies), config)).not.toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-002' }),
+    );
+
+    const authOnlyPolicyForPublicGrant: CatalogTable = {
+      ...publicGrantTable,
+      grants: [{ role: 'public', privileges: ['select'] }],
+      policies: secureTable.policies.map((policy) => ({
+        ...policy,
+        roles: ['authenticated'],
+        effectiveRoles: ['authenticated'],
+      })),
+    };
+    expect(runStaticRules(snapshot(authOnlyPolicyForPublicGrant), config)).toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-002', role: 'public', operation: 'select' }),
+    );
+  });
+
+  it('scopes non-storage static rules to snapshot.schemas while keeping TS-STORAGE-001 active', () => {
+    const storageObjects: CatalogTable = {
+      ...secureTable,
+      schema: 'storage',
+      name: 'objects',
+      rlsEnabled: false,
+      grants: [{ role: 'authenticated', privileges: ['select'] }],
+      policies: [
+        {
+          name: 'private bucket custom claim',
+          command: 'select',
+          permissive: true,
+          roles: ['authenticated'],
+          usingExpression:
+            "bucket_id = 'private-id' AND owner_id::text = current_setting('request.jwt.claims', true)::jsonb ->> 'sub'",
+          checkExpression: null,
+        },
+      ],
+    };
+    const storageView = {
+      schema: 'storage',
+      name: 'object_summary',
+      securityInvoker: false,
+      grants: [{ role: 'authenticated', privileges: ['select' as const] }],
+    };
+    const storageFunction = {
+      schema: 'storage',
+      name: 'internal_helper',
+      identityArguments: '',
+      securityDefiner: true,
+      isTrigger: false,
+      executeRoles: ['authenticated'],
+    };
+    const findings = runStaticRules(
+      {
+        ...snapshot(),
+        schemas: ['public'],
+        tables: [secureTable, storageObjects],
+        views: [storageView],
+        functions: [storageFunction],
+        storageBuckets: [{ id: 'private-id', name: 'private-files', isPublic: false }],
+      },
+      config,
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it('accepts nested OR in restrictive policies and boolean connectives inside IN (SELECT ...) subqueries', () => {
+    const nestedOr = guardedUnconditionalSelect(
+      "org_id = auth.uid() AND (status = 'active' OR status = 'pending')",
+    );
+    expect(runStaticRules(snapshot(nestedOr), config)).not.toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }),
+    );
+
+    const subqueryWithConnectives = guardedUnconditionalSelect(
+      "org_id IN (SELECT m.org_id FROM memberships m WHERE m.user_id = auth.uid() AND (m.role = 'admin' OR m.role = 'owner'))",
+    );
+    expect(runStaticRules(snapshot(subqueryWithConnectives), config)).not.toContainEqual(
+      expect.objectContaining({ ruleId: 'TS-RLS-003', policy: 'tenant select' }),
+    );
+  });
+
+  it('recognizes wrapped scalar-SELECT auth helpers without false-positiving on unwrapped or correlated calls', () => {
+    const wrappedVariants = [
+      "org_id = (SELECT COALESCE(auth.uid(), '00000000-0000-0000-0000-000000000000'::uuid))",
+      "org_id = (SELECT NULLIF(auth.jwt() ->> 'org_id', '')::uuid)",
+    ];
+    for (const usingExpression of wrappedVariants) {
+      const table: CatalogTable = {
+        ...secureTable,
+        policies: secureTable.policies.map((policy) =>
+          policy.command === 'select' ? { ...policy, usingExpression } : policy,
+        ),
+      };
+      expect(runStaticRules(snapshot(table), config)).not.toContainEqual(
+        expect.objectContaining({ ruleId: 'TS-PERF-001', policy: 'tenant select' }),
+      );
+    }
+
+    const unwrappedVariants = [
+      "org_id = COALESCE(auth.uid(), '00000000-0000-0000-0000-000000000000'::uuid)",
+      '((SELECT 1) = 1 AND org_id = auth.uid())',
+      'EXISTS (SELECT 1 FROM memberships m WHERE m.org_id = invoices.org_id AND m.user_id = auth.uid())',
+    ];
+    for (const usingExpression of unwrappedVariants) {
+      const table: CatalogTable = {
+        ...secureTable,
+        policies: secureTable.policies.map((policy) =>
+          policy.command === 'select' ? { ...policy, usingExpression } : policy,
+        ),
+      };
+      expect(runStaticRules(snapshot(table), config)).toContainEqual(
+        expect.objectContaining({ ruleId: 'TS-PERF-001', policy: 'tenant select' }),
+      );
+    }
+  });
 });

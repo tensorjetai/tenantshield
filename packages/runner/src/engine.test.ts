@@ -68,8 +68,10 @@ class FakeRlsClient implements DynamicSqlClient {
   private identity = 'alice';
   private claims: Record<string, unknown> = {};
   private activeBegins = 0;
+  private activeOuterSavepoints = 0;
   readonly statements: string[] = [];
   maxConcurrentBegins = 0;
+  maxConcurrentOuterSavepoints = 0;
 
   query(sql: string, values: readonly unknown[] = []): Promise<DynamicSqlResult> {
     this.statements.push(sql);
@@ -78,6 +80,16 @@ class FakeRlsClient implements DynamicSqlClient {
       this.maxConcurrentBegins = Math.max(this.maxConcurrentBegins, this.activeBegins);
     }
     if (sql === 'ROLLBACK') this.activeBegins -= 1;
+    if (sql === 'SAVEPOINT tenantshield_outer_case') {
+      this.activeOuterSavepoints += 1;
+      this.maxConcurrentOuterSavepoints = Math.max(
+        this.maxConcurrentOuterSavepoints,
+        this.activeOuterSavepoints,
+      );
+    }
+    if (sql === 'RELEASE SAVEPOINT tenantshield_outer_case') {
+      this.activeOuterSavepoints -= 1;
+    }
     if (sql.startsWith('SET LOCAL ROLE')) return Promise.resolve({ rows: [], rowCount: 0 });
     if (sql.includes("set_config('request.jwt.claims'")) {
       this.claims = JSON.parse(String(values[0])) as Record<string, unknown>;
@@ -765,5 +777,48 @@ describe('dynamic CRUD engine', () => {
         maxConcurrentResources: 99,
       }),
     ).resolves.toMatchObject({ complete: true });
+  });
+
+  it('forces sequential resource execution inside synthesizeFixturesInTransaction even when maxConcurrentResources > 1', async () => {
+    const multiConfig: TenantShieldConfig = {
+      ...config,
+      resources: {
+        invoices: config.resources['invoices']!,
+        projects: {
+          primaryKey: 'id',
+          tenantColumn: 'org_id',
+          ownerIdentity: 'alice',
+          foreignIdentity: 'bob',
+          testOperations: ['select'],
+        },
+      },
+    };
+    const multiSnapshot: CatalogSnapshot = {
+      ...snapshot,
+      tables: [
+        ...snapshot.tables,
+        {
+          schema: 'public',
+          name: 'projects',
+          rlsEnabled: true,
+          rlsForced: false,
+          columns: [
+            { name: 'id', dataType: 'uuid', ordinal: 1 },
+            { name: 'org_id', dataType: 'uuid', ordinal: 2 },
+          ],
+          primaryKey: ['id'],
+          foreignKeys: [],
+          grants: [],
+          policies: [],
+        },
+      ],
+    };
+
+    const client = new FakeRlsClient();
+    const result = await synthesizeFixturesInTransaction(client, multiConfig, multiSnapshot, {
+      maxConcurrentResources: 4,
+    });
+    expect(result.complete).toBe(true);
+    expect(client.maxConcurrentOuterSavepoints).toBe(1);
   });
 });

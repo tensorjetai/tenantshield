@@ -62,7 +62,7 @@ The local admin connection lets TenantShield load deterministic fixtures. Every 
 
 Progress feedback always goes to stderr so stdout stays parseable: `scan` reports before and after catalog capture, and `test` prints a `k/N resources tested` line as each resource's dynamic cases complete.
 
-Exit codes: `0` complete and clean at threshold; `1` complete scan with a finding at threshold; `2` invalid configuration/dependency/safety target; `3` database/fixture failure or incomplete dynamic suite; `4` internal error.
+Exit codes: `0` complete and clean at threshold; `1` finding meeting `--fail-on` threshold; `2` invalid configuration/dependency/safety target; `3` database/fixture failure or incomplete dynamic suite without threshold findings; `4` internal error.
 
 ## Documentation
 

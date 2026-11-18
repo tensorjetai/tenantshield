@@ -16,7 +16,7 @@ TenantShield MCP connects AI coding agents—including Cursor, Claude Code, Wind
 Add TenantShield MCP to Claude Code with a single command:
 
 ```bash
-claude mcp add tenantshield -- npx --yes tenantshield-mcp@0.2.2
+claude mcp add tenantshield -- npx --yes tenantshield-mcp@0.2.3
 ```
 
 ### 2. Cursor (`.cursor/mcp.json` or `~/.cursor/mcp.json`)
@@ -28,7 +28,7 @@ Add the server to your project or global Cursor configuration:
   "mcpServers": {
     "tenantshield": {
       "command": "npx",
-      "args": ["--yes", "tenantshield-mcp@0.2.2"],
+      "args": ["--yes", "tenantshield-mcp@0.2.3"],
       "env": {
         "TENANTSHIELD_DATABASE_URL": "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
       }
@@ -44,7 +44,7 @@ Add the server to your project or global Cursor configuration:
   "mcpServers": {
     "tenantshield": {
       "command": "npx",
-      "args": ["--yes", "tenantshield-mcp@0.2.2"],
+      "args": ["--yes", "tenantshield-mcp@0.2.3"],
       "env": {
         "TENANTSHIELD_DATABASE_URL": "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
       }
@@ -141,7 +141,7 @@ Create or update `.cursor/mcp.json` in your repository root:
   "mcpServers": {
     "tenantshield": {
       "command": "npx",
-      "args": ["--yes", "tenantshield-mcp@0.2.2"],
+      "args": ["--yes", "tenantshield-mcp@0.2.3"],
       "env": {
         "TENANTSHIELD_DATABASE_URL": "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
       }
@@ -159,7 +159,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
   "mcpServers": {
     "tenantshield": {
       "command": "npx",
-      "args": ["--yes", "tenantshield-mcp@0.2.2"],
+      "args": ["--yes", "tenantshield-mcp@0.2.3"],
       "env": {
         "TENANTSHIELD_DATABASE_URL": "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
       }

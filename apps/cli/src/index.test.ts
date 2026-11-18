@@ -177,9 +177,34 @@ describe('CLI foundation', () => {
     });
   });
 
-  it('uses setup-failure exit code for incomplete dynamic results', () => {
+  it('uses setup-failure exit code for incomplete dynamic results unless threshold finding is present', () => {
     expect(determineTestExitCode([], 'high', false)).toBe(3);
     expect(determineTestExitCode([], 'high', true)).toBe(0);
+    expect(
+      determineTestExitCode(
+        [
+          {
+            ruleId: 'TS-DYN-SUBQUERY',
+            title: 'Tenant membership policy raises a cardinality error',
+            severity: 'high',
+            confidence: 'high',
+            source: 'dynamic',
+            schema: 'public',
+            table: 'invoices',
+            operation: 'select',
+            identity: 'member',
+            expected: 'Membership predicates return a set',
+            observed: 'SQLSTATE 21000',
+            reproduction: { command: 'tenantshield test', details: 'redacted' },
+            remediation: 'Use IN or EXISTS',
+            documentationUrl: 'https://github.com/tensorjetai/tenantshield#ts-dyn-subquery',
+            fingerprint: 'dyn-subquery-fp',
+          },
+        ],
+        'high',
+        false,
+      ),
+    ).toBe(1);
   });
 
   it('maps missing prerequisites to exit code 2', () => {

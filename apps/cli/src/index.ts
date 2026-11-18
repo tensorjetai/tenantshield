@@ -612,8 +612,9 @@ export function determineTestExitCode(
   failOn: Severity,
   complete: boolean,
 ): 0 | 1 | 3 {
+  if (failureThresholdMet(findings, failOn)) return 1;
   if (!complete) return 3;
-  return failureThresholdMet(findings, failOn) ? 1 : 0;
+  return 0;
 }
 
 export function summarizeStaticResources(snapshot: {

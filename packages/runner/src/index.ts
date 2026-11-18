@@ -544,9 +544,10 @@ export async function synthesizeFixturesInTransaction(
   client: DynamicSqlClient,
   config: TenantShieldConfig,
   snapshot: CatalogSnapshot,
+  options: DynamicTestOptions = {},
 ): Promise<DynamicRunResult> {
   const resources = Object.entries(config.resources).filter(([, resource]) => !resource.public);
-  if (!resources.length) return runDynamicTests(client, config, snapshot);
+  if (!resources.length) return runDynamicTests(client, config, snapshot, options);
   const tableKey = (schema: string, name: string) => `${schema}\0${name}`;
   const tables = new Map(
     [...snapshot.tables, ...(snapshot.fixtureTables ?? [])].map((table) => [
@@ -746,6 +747,7 @@ export async function synthesizeFixturesInTransaction(
       }
     }
     const result = await runDynamicTests(client, config, snapshot, {
+      ...options,
       seededFixtures: Object.fromEntries(seededResourceValues),
     });
     return {
@@ -1631,7 +1633,9 @@ export async function runDynamicTests(
 
   const entries = Object.entries(config.resources).filter(([, resource]) => !resource.public);
   const requested = options.maxConcurrentResources ?? 1;
-  const limit = Math.min(8, Math.max(1, Number.isFinite(requested) ? Math.floor(requested) : 1));
+  const limit = outerTransactionClients.has(client)
+    ? 1
+    : Math.min(8, Math.max(1, Number.isFinite(requested) ? Math.floor(requested) : 1));
   const results: ResourceOutcome[] = new Array<ResourceOutcome>(entries.length);
   let cursor = 0;
   await Promise.all(
